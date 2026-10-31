@@ -12,7 +12,8 @@
         readerFontSize === 'large' ? 'text-base leading-normal' :
         'text-sm leading-normal'
     );
-    let classes = $state<string[]>([]);
+    let classes = $state<string[]>(['JSS 1', 'JSS 2', 'JSS 3']);
+    let selectedScheme = $state<string>('new_nerdc_v1');
     let selectedClass = $state<string>('');
     let selectedTerm = $state<number>(1);
     let subjects = $state<string[]>([]);
@@ -34,8 +35,63 @@
     // Selected week node preview
     let selectedNode = $derived(weeks.find(w => w.id === selectedWeekId));
 
-    // Dynamic API Base URL (configured via VITE_API_URL on Vercel)
-    const API_BASE = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+    // Curriculum Correction Modal State
+    let isEditingNode = $state<boolean>(false);
+    let editTopic = $state<string>('');
+    let editSubtopics = $state<string>('');
+    let editContinuity = $state<string>('new_concept');
+    let editRecap = $state<string>('');
+    let isSavingNode = $state<boolean>(false);
+
+    function openEditModal() {
+        if (!selectedNode) return;
+        editTopic = selectedNode.topic;
+        editSubtopics = (selectedNode.sub_topics || []).join('\n');
+        editContinuity = selectedNode.continuity_type || 'new_concept';
+        editRecap = selectedNode.previous_topic_recap || '';
+        isEditingNode = true;
+    }
+
+    async function saveNodeCorrection() {
+        if (!selectedNode) return;
+        isSavingNode = true;
+        try {
+            const subtopicsList = editSubtopics.split('\n').map(s => s.trim()).filter(Boolean);
+            const payload = {
+                topic: editTopic,
+                sub_topics: subtopicsList,
+                continuity_type: editContinuity,
+                previous_topic_recap: editRecap
+            };
+
+            const res = await fetch(apiUrl(`/api/v1/curriculum/node/${selectedNode.id}`), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) throw new Error('Failed to update curriculum node');
+
+            const updatedNode: CurriculumNode = await res.json();
+            const idx = weeks.findIndex(w => w.id === updatedNode.id);
+            if (idx !== -1) {
+                weeks[idx] = updatedNode;
+            }
+            isEditingNode = false;
+            alert('✅ Scheme topic corrected and saved to database successfully!');
+        } catch (err: any) {
+            alert(err.message || 'Error updating curriculum node');
+        } finally {
+            isSavingNode = false;
+        }
+    }
+
+    // Dynamic API Base URL (defaults to production Render backend if VITE_API_URL is unset on hosted domains)
+    const API_BASE = (
+        import.meta.env.VITE_API_URL ||
+        (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') ? '' : 'https://lesson-flows-api.onrender.com')
+    ).replace(/\/$/, '');
+
     function apiUrl(path: string): string {
         if (!path) return '';
         if (path.startsWith('http://') || path.startsWith('https://')) return path;
@@ -52,10 +108,38 @@
         try {
             const res = await fetch(apiUrl('/api/v1/curriculum/classes'));
             if (res.ok) {
-                classes = await res.json();
+                const data = await res.json();
+                if (Array.isArray(data) && data.length > 0) {
+                    classes = data;
+                }
             }
         } catch (err) {
             console.error('Error fetching classes:', err);
+        }
+    }
+
+    async function loadSubjectsForClass(val: string) {
+        if (!val) {
+            subjects = [];
+            return;
+        }
+        try {
+            const res = await fetch(apiUrl(`/api/v1/curriculum/subjects?class_level=${encodeURIComponent(val)}&scheme_version=${selectedScheme}`));
+            if (res.ok) {
+                subjects = await res.json();
+            }
+        } catch (err) {
+            console.error('Error fetching subjects:', err);
+        }
+    }
+
+    async function handleSchemeChange(scheme: string) {
+        selectedScheme = scheme;
+        selectedSubject = '';
+        selectedWeekId = '';
+        weeks = [];
+        if (selectedClass) {
+            await loadSubjectsForClass(selectedClass);
         }
     }
 
@@ -65,17 +149,7 @@
         selectedSubject = '';
         selectedWeekId = '';
         weeks = [];
-        subjects = [];
-
-        if (!val) return;
-        try {
-            const res = await fetch(apiUrl(`/api/v1/curriculum/subjects?class_level=${encodeURIComponent(val)}`));
-            if (res.ok) {
-                subjects = await res.json();
-            }
-        } catch (err) {
-            console.error('Error fetching subjects:', err);
-        }
+        await loadSubjectsForClass(val);
     }
 
     async function loadWeeks() {
@@ -84,7 +158,7 @@
         if (!selectedClass || !selectedSubject) return;
 
         try {
-            const url = `/api/v1/curriculum/weeks?class_level=${encodeURIComponent(selectedClass)}&subject=${encodeURIComponent(selectedSubject)}&term=${selectedTerm}`;
+            const url = `/api/v1/curriculum/weeks?class_level=${encodeURIComponent(selectedClass)}&subject=${encodeURIComponent(selectedSubject)}&term=${selectedTerm}&scheme_version=${selectedScheme}`;
             const res = await fetch(apiUrl(url));
             if (res.ok) {
                 weeks = await res.json();
@@ -172,7 +246,6 @@
                 <div>
                     <h1 class="font-extrabold text-base tracking-wide flex items-center gap-2">
                         Lagos Teacher Assistant
-                        <span class="text-[10px] bg-amber-400 text-slate-900 px-2 py-0.5 rounded-full font-bold">SvelteKit PWA</span>
                     </h1>
                     <p class="text-xs text-emerald-200">NERDC Standards & Lagos Unified Schemes Aligned</p>
                 </div>
@@ -221,6 +294,44 @@
                 <h2 class="text-emerald-900 font-bold text-sm mb-3 flex items-center gap-2 pb-2 border-b border-slate-100">
                     <span>🎯</span> Select Class Level & Syllabus Topic
                 </h2>
+
+                <!-- Scheme Version Selector (New NERDC vs Old Lagos Unified) -->
+                <div class="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+                    <span class="block text-xs font-bold text-slate-700 mb-1.5 flex items-center justify-between">
+                        <span>📜 Curriculum Standard:</span>
+                        <span class="text-[10px] text-emerald-800 font-semibold bg-emerald-100 px-2 py-0.5 rounded-full">
+                            {selectedScheme === 'new_nerdc_v1' ? 'Latest 2026 Revised' : 'Lagos Legacy Syllabus'}
+                        </span>
+                    </span>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                            type="button"
+                            class="p-2 text-left rounded-md border text-xs font-semibold transition flex items-center justify-between {selectedScheme === 'new_nerdc_v1' ? 'border-emerald-600 bg-emerald-50/80 text-emerald-950 ring-1 ring-emerald-600' : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'}"
+                            onclick={() => handleSchemeChange('new_nerdc_v1')}
+                        >
+                            <div>
+                                <p class="font-bold">🌟 New NERDC Scheme</p>
+                                <p class="text-[10px] text-slate-500 font-normal">2024–2026 Unified (Social & Citizenship, Inter Science)</p>
+                            </div>
+                            {#if selectedScheme === 'new_nerdc_v1'}
+                                <span class="text-emerald-700 font-bold">✓</span>
+                            {/if}
+                        </button>
+                        <button
+                            type="button"
+                            class="p-2 text-left rounded-md border text-xs font-semibold transition flex items-center justify-between {selectedScheme === 'old_lagos_v1' ? 'border-emerald-600 bg-emerald-50/80 text-emerald-950 ring-1 ring-emerald-600' : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'}"
+                            onclick={() => handleSchemeChange('old_lagos_v1')}
+                        >
+                            <div>
+                                <p class="font-bold">🏛️ Lagos State Unified</p>
+                                <p class="text-[10px] text-slate-500 font-normal">Legacy Syllabus (Social Studies, BST, CCA)</p>
+                            </div>
+                            {#if selectedScheme === 'old_lagos_v1'}
+                                <span class="text-emerald-700 font-bold">✓</span>
+                            {/if}
+                        </button>
+                    </div>
+                </div>
 
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
                     <div>
@@ -286,19 +397,30 @@
 
                     {#if selectedNode}
                         <div class="mt-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs">
-                            {#if selectedNode.continuity_type === 'continuation'}
-                                <span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full inline-block mb-1">
-                                    🔄 Continuation (Scaffolded from Previous Week)
-                                </span>
-                            {:else if selectedNode.continuity_type === 'spiral_deepening'}
-                                <span class="bg-sky-100 text-sky-800 font-bold px-2 py-0.5 rounded-full inline-block mb-1">
-                                    📈 Spiral Progression (Advanced JSS2 Standard)
-                                </span>
-                            {:else}
-                                <span class="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full inline-block mb-1">
-                                    🌱 New Foundational Concept
-                                </span>
-                            {/if}
+                            <div class="flex items-center justify-between flex-wrap gap-1 mb-1">
+                                <div>
+                                    {#if selectedNode.continuity_type === 'continuation'}
+                                        <span class="bg-amber-100 text-amber-800 font-bold px-2 py-0.5 rounded-full inline-block">
+                                            🔄 Continuation (Scaffolded from Previous Week)
+                                        </span>
+                                    {:else if selectedNode.continuity_type === 'spiral_deepening'}
+                                        <span class="bg-sky-100 text-sky-800 font-bold px-2 py-0.5 rounded-full inline-block">
+                                            📈 Spiral Progression (Advanced JSS2 Standard)
+                                        </span>
+                                    {:else}
+                                        <span class="bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full inline-block">
+                                            🌱 New Foundational Concept
+                                        </span>
+                                    {/if}
+                                </div>
+                                <button
+                                    type="button"
+                                    onclick={openEditModal}
+                                    class="text-indigo-800 hover:text-indigo-950 font-bold text-[11px] bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-2.5 py-0.5 rounded flex items-center gap-1 shadow-2xs"
+                                >
+                                    ✏️ Correct Topic / Scheme
+                                </button>
+                            </div>
                             <p class="text-slate-600 mt-0.5">
                                 <span class="font-semibold text-slate-800">Entry Knowledge:</span>
                                 {selectedNode.previous_topic_recap || 'General daily observation'}
@@ -781,6 +903,102 @@
                     >
                         💾 Save Branding Header
                     </button>
+                </div>
+            </div>
+        {/if}
+
+        <!-- Curriculum Correction Modal -->
+        {#if isEditingNode && selectedNode}
+            <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+                <div class="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-5 sm:p-6 space-y-4 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+                    <div class="flex items-center justify-between border-b border-slate-200 pb-3">
+                        <div>
+                            <span class="text-[10px] font-bold text-indigo-700 uppercase tracking-wider">Direct Scheme Correction</span>
+                            <h3 class="font-extrabold text-slate-900 text-sm sm:text-base flex items-center gap-1.5">
+                                <span>✏️</span> Edit Week {selectedNode.week} Syllabus Topic
+                            </h3>
+                        </div>
+                        <button
+                            onclick={() => isEditingNode = false}
+                            class="text-slate-400 hover:text-slate-700 font-bold text-xl px-2 py-1 rounded"
+                        >
+                            ✕
+                        </button>
+                    </div>
+
+                    <div>
+                        <label for="edit-topic-input" class="block text-xs font-bold text-slate-700 mb-1">Topic Title</label>
+                        <input
+                            id="edit-topic-input"
+                            type="text"
+                            bind:value={editTopic}
+                            class="w-full border border-slate-300 rounded-lg p-2.5 text-xs font-semibold focus:border-indigo-600 focus:outline-none"
+                            placeholder="Enter official topic name"
+                        />
+                    </div>
+
+                    <div>
+                        <label for="edit-subtopics-input" class="block text-xs font-bold text-slate-700 mb-1 flex items-center justify-between">
+                            <span>Subtopics & Learning Points</span>
+                            <span class="text-[10px] text-slate-400 font-normal">One per line</span>
+                        </label>
+                        <textarea
+                            id="edit-subtopics-input"
+                            rows="4"
+                            bind:value={editSubtopics}
+                            class="w-full border border-slate-300 rounded-lg p-2.5 text-xs focus:border-indigo-600 focus:outline-none font-mono"
+                            placeholder="e.g.&#10;Meaning and components&#10;Types and classifications&#10;Local Nigerian examples"
+                        ></textarea>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label for="edit-continuity-select" class="block text-xs font-bold text-slate-700 mb-1">Continuity Type</label>
+                            <select
+                                id="edit-continuity-select"
+                                bind:value={editContinuity}
+                                class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:border-indigo-600 focus:outline-none bg-white"
+                            >
+                                <option value="new_concept">🌱 New Foundational Concept</option>
+                                <option value="continuation">🔄 Part II / Continuation</option>
+                                <option value="revision">📝 Mid-Term Revision / Assessment</option>
+                                <option value="spiral_deepening">📈 Spiral Deepening</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label for="edit-recap-input" class="block text-xs font-bold text-slate-700 mb-1">Previous Knowledge Recap</label>
+                            <input
+                                id="edit-recap-input"
+                                type="text"
+                                bind:value={editRecap}
+                                class="w-full border border-slate-300 rounded-lg p-2 text-xs focus:border-indigo-600 focus:outline-none"
+                                placeholder="Summary of prior week"
+                            />
+                        </div>
+                    </div>
+
+                    <div class="flex items-center justify-end gap-2 pt-3 border-t border-slate-200">
+                        <button
+                            type="button"
+                            onclick={() => isEditingNode = false}
+                            class="px-3.5 py-2 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="button"
+                            onclick={saveNodeCorrection}
+                            disabled={isSavingNode}
+                            class="px-4 py-2 rounded-lg text-xs font-bold bg-emerald-800 hover:bg-emerald-900 text-white shadow-sm flex items-center gap-1.5 transition disabled:opacity-50"
+                        >
+                            {#if isSavingNode}
+                                <span>⏳ Saving to DB...</span>
+                            {:else}
+                                <span>💾 Save Correction</span>
+                            {/if}
+                        </button>
+                    </div>
                 </div>
             </div>
         {/if}
