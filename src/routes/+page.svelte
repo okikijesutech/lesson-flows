@@ -212,7 +212,16 @@
         c.chalkboard_content.sections.forEach((sec: ChalkboardSection) => {
             text += `*${sec.heading}*\n`;
             sec.content.forEach((line: string) => {
-                text += `• ${line}\n`;
+                const clean = line.trim();
+                if (clean.startsWith('• ') || clean.startsWith('- ')) {
+                    text += `${clean}\n`;
+                } else if (clean.startsWith('[DIAGRAM') || clean.startsWith('[DRAW') || clean.startsWith('[SKETCH')) {
+                    text += `📐 _${clean}_\n`;
+                } else if (clean.startsWith('NOTE:') || clean.startsWith('IMPORTANT') || clean.startsWith('KEY EXAM') || clean.startsWith('RULE:')) {
+                    text += `💡 *${clean}*\n`;
+                } else {
+                    text += `${clean}\n`;
+                }
             });
             text += `\n`;
         });
@@ -299,6 +308,43 @@
             </div>
         </div>
     </header>
+
+    {#snippet renderChalkboardLine(line: string)}
+        {@const clean = line.trim()}
+        {#if clean.startsWith('[DIAGRAM') || clean.startsWith('[DRAW') || clean.startsWith('[SKETCH')}
+            <div class="my-2 p-3 bg-teal-950/60 border border-dashed border-teal-400/60 rounded-xl text-teal-200 text-xs flex items-start gap-2.5 shadow-inner">
+                <span class="text-base shrink-0">📐</span>
+                <div class="font-mono text-[11px] leading-relaxed">
+                    <span class="font-bold uppercase tracking-wider text-teal-300 block mb-0.5">Board Illustration</span>
+                    <span class="italic">{clean.replace(/^\[|\]$/g, '')}</span>
+                </div>
+            </div>
+        {:else if clean.startsWith('IMPORTANT') || clean.startsWith('KEY EXAM') || clean.startsWith('NOTE:') || clean.startsWith('RULE:')}
+            <div class="my-2 p-3 bg-amber-950/60 border border-amber-500/70 rounded-xl text-amber-200 text-xs flex items-start gap-2.5 shadow-inner">
+                <span class="text-base shrink-0">💡</span>
+                <div class="text-[11px] leading-relaxed">
+                    <span class="font-extrabold uppercase tracking-wider text-amber-300 block mb-0.5">Key Exam Takeaway</span>
+                    <span>{clean}</span>
+                </div>
+            </div>
+        {:else if clean.startsWith('• ') || clean.startsWith('- ')}
+            <div class="flex items-start gap-2 text-slate-200 pl-1.5 py-0.5">
+                <span class="text-emerald-400 mt-1 shrink-0 text-[10px]">▸</span>
+                <span class="leading-relaxed">{clean.replace(/^[•\-]\s*/, '')}</span>
+            </div>
+        {:else if clean.includes(':') && clean.indexOf(':') < 35}
+            {@const colonIdx = clean.indexOf(':')}
+            {@const label = clean.slice(0, colonIdx + 1)}
+            {@const rest = clean.slice(colonIdx + 1)}
+            <p class="text-slate-200 leading-relaxed py-1">
+                <strong class="text-emerald-300 font-bold">{label}</strong>{rest}
+            </p>
+        {:else}
+            <p class="text-slate-200 leading-relaxed py-1">
+                {clean}
+            </p>
+        {/if}
+    {/snippet}
 
     <!-- Main Workspace Container -->
     <main class="max-w-6xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-6 flex-1">
@@ -571,18 +617,15 @@
                                     </div>
 
                                     {#each cb.sections as sec, idx}
-                                        <div class="space-y-1">
-                                            <h4 class="font-bold text-amber-400 text-xs sm:text-sm">
-                                                {idx + 1}. {sec.heading}
+                                        <div class="space-y-1.5 pt-2 first:pt-0 border-b border-slate-800/60 pb-3 last:border-b-0">
+                                            <h4 class="font-extrabold text-amber-300 text-xs sm:text-sm tracking-wide">
+                                                {sec.heading}
                                             </h4>
-                                            <ul class="space-y-1 text-slate-200 text-xs sm:text-sm pl-2">
+                                            <div class="space-y-1 text-slate-200 text-xs sm:text-sm">
                                                 {#each sec.content as line}
-                                                    <li class="flex items-start gap-1.5">
-                                                        <span class="text-emerald-400 mt-1">•</span>
-                                                        <span>{line}</span>
-                                                    </li>
+                                                    {@render renderChalkboardLine(line)}
                                                 {/each}
-                                            </ul>
+                                            </div>
                                         </div>
                                     {/each}
 
@@ -755,18 +798,15 @@
                             </div>
 
                             {#each cb.sections as sec, idx}
-                                <div class="space-y-2">
-                                    <h4 class="font-bold text-amber-400 text-sm sm:text-base">
-                                        {idx + 1}. {sec.heading}
+                                <div class="space-y-2 pt-3 first:pt-0 border-b border-slate-800/60 pb-4 last:border-b-0">
+                                    <h4 class="font-extrabold text-amber-300 text-sm sm:text-base tracking-wide">
+                                        {sec.heading}
                                     </h4>
-                                    <ul class="space-y-1.5 text-slate-200 pl-3">
+                                    <div class="space-y-1.5 text-slate-200">
                                         {#each sec.content as line}
-                                            <li class="flex items-start gap-2">
-                                                <span class="text-emerald-400 mt-1">•</span>
-                                                <span>{line}</span>
-                                            </li>
+                                            {@render renderChalkboardLine(line)}
                                         {/each}
-                                    </ul>
+                                    </div>
                                 </div>
                             {/each}
 
