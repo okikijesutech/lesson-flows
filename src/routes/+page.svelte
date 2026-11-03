@@ -44,6 +44,36 @@
     let editRecap = $state<string>('');
     let isSavingNode = $state<boolean>(false);
 
+    // --- USER AUTH & QUOTA MANAGEMENT STATE ---
+    interface UserProfile {
+        id: string;
+        name: string;
+        email?: string;
+        phone_number?: string;
+        school_name?: string;
+        school_motto?: string;
+        tier: string;
+        quota_limit: number;
+        notes_generated_this_week: number;
+        notes_remaining: number;
+    }
+
+    let authToken = $state<string>('');
+    let currentUser = $state<UserProfile | null>(null);
+
+    // Auth Modal State
+    let isAuthModalOpen = $state<boolean>(false);
+    let authMode = $state<'login' | 'register'>('login');
+    let authEmail = $state<string>('');
+    let authPassword = $state<string>('');
+    let authName = $state<string>('');
+    let authSchool = $state<string>('');
+    let authError = $state<string>('');
+    let isSubmittingAuth = $state<boolean>(false);
+
+    // Quota Exceeded Modal State
+    let isQuotaModalOpen = $state<boolean>(false);
+
     // Dynamic API Base URL
     const API_BASE = (
         import.meta.env.VITE_API_URL ||
@@ -58,9 +88,116 @@
     }
 
     onMount(() => {
+        authToken = localStorage.getItem('lessonflows_token') || '';
+        if (authToken) {
+            loadUserProfile();
+            loadCloudLibrary();
+        }
         loadClasses();
         loadSavedBranding();
     });
+
+    async function loadUserProfile() {
+        if (!authToken) return;
+        try {
+            const res = await fetch(apiUrl('/api/v1/auth/me'), {
+                headers: { 'Authorization': `Bearer ${authToken}` }
+            });
+            if (res.ok) {
+                currentUser = await res.json();
+                if (currentUser?.school_name) {
+                    schoolName = currentUser.school_name;
+                }
+                if (currentUser?.school_motto) {
+                    schoolMotto = currentUser.school_motto;
+                }
+            } else if (res.status === 401) {
+                handleLogout();
+            }
+        } catch (err) {
+            console.error('Error loading user profile:', err);
+        }
+    }
+
+    async function loadCloudLibrary() {
+        if (!authToken) return;
+        try {
+            const res = await fetch(apiUrl('/api/v1/notes/library'), {
+                headers: { 'Authorization': `Bearer ${authToken}` }
+            });
+            if (res.ok) {
+                const cloudNotes = await res.json();
+                if (Array.isArray(cloudNotes) && cloudNotes.length > 0) {
+                    library = cloudNotes;
+                }
+            }
+        } catch (err) {
+            console.error('Error loading library:', err);
+        }
+    }
+
+    async function submitAuth() {
+        authError = '';
+        if (!authEmail || !authPassword) {
+            authError = 'Please enter both email and password.';
+            return;
+        }
+        if (authMode === 'register' && !authName) {
+            authError = 'Please enter your full name.';
+            return;
+        }
+
+        isSubmittingAuth = true;
+        try {
+            const endpoint = authMode === 'login' ? '/api/v1/auth/login' : '/api/v1/auth/register';
+            const payload: any = {
+                email: authEmail.trim(),
+                password: authPassword
+            };
+            if (authMode === 'register') {
+                payload.name = authName.trim();
+                payload.school_name = authSchool.trim() || undefined;
+            }
+
+            const res = await fetch(apiUrl(endpoint), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const data = await res.json();
+            if (!res.ok) {
+                throw new Error(data.detail || 'Authentication failed.');
+            }
+
+            authToken = data.access_token;
+            currentUser = data.user;
+            localStorage.setItem('lessonflows_token', authToken);
+            if (currentUser?.school_name) {
+                schoolName = currentUser.school_name;
+            }
+            if (currentUser?.school_motto) {
+                schoolMotto = currentUser.school_motto;
+            }
+
+            isAuthModalOpen = false;
+            authEmail = '';
+            authPassword = '';
+            authName = '';
+            authSchool = '';
+            await loadCloudLibrary();
+        } catch (err: any) {
+            authError = err.message || 'Authentication error';
+        } finally {
+            isSubmittingAuth = false;
+        }
+    }
+
+    function handleLogout() {
+        authToken = '';
+        currentUser = null;
+        localStorage.removeItem('lessonflows_token');
+    }
 
     async function loadClasses() {
         try {
@@ -183,17 +320,31 @@
                 custom_instructions: customInstructions
             };
 
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+            if (authToken) {
+                headers['Authorization'] = `Bearer ${authToken}`;
+            }
+
             const res = await fetch(apiUrl('/api/v1/notes/generate'), {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify(payload)
             });
+
+            if (res.status === 403) {
+                const errData = await res.json();
+                isQuotaModalOpen = true;
+                throw new Error(errData.detail || 'Weekly free quota reached. Please upgrade to continue.');
+            }
 
             if (!res.ok) throw new Error('Failed to generate lesson note.');
 
             const note: LessonNote = await res.json();
             currentNote = note;
             library = [note, ...library];
+            if (authToken) {
+                loadUserProfile(); // live refresh remaining quota counter
+            }
             activeTab = 'reader'; // Automatically open reader on mobile
         } catch (err: any) {
             alert(err.message || 'Error occurred while generating.');
@@ -300,11 +451,45 @@
                 </button>
             </nav>
             
-            <!-- Quality Badge (from Uizard design) -->
-            <div class="flex items-center gap-1.5 bg-amber-50 border border-amber-300 text-amber-900 text-[10px] sm:text-xs font-bold px-2.5 py-1 rounded-full shadow-2xs">
-                <span>🛡️</span>
-                <span class="hidden sm:inline">NERDC & Lagos State Verified</span>
-                <span class="sm:hidden">Verified Scheme</span>
+            <!-- Right Section: Quality Badge + User Auth Pill -->
+            <div class="flex items-center gap-2">
+                <!-- Quality Badge (from Uizard design) -->
+                <div class="hidden sm:flex items-center gap-1.5 bg-amber-50 border border-amber-300 text-amber-900 text-[10px] sm:text-xs font-bold px-2.5 py-1 rounded-full shadow-2xs">
+                    <span>🛡️</span>
+                    <span>NERDC & Lagos Verified</span>
+                </div>
+
+                <!-- User Account / Quota Pill -->
+                {#if currentUser}
+                    <div class="flex items-center gap-2 bg-emerald-50 border border-emerald-200/90 rounded-full pl-2.5 pr-1 py-1 shadow-2xs">
+                        <div class="text-left hidden sm:block">
+                            <span class="block text-[11px] font-extrabold text-emerald-950 leading-none truncate max-w-[120px]">
+                                {currentUser.name}
+                            </span>
+                            <span class="block text-[9px] font-bold text-emerald-700 leading-tight">
+                                ⚡ {currentUser.notes_remaining}/{currentUser.quota_limit} notes left
+                            </span>
+                        </div>
+                        <span class="sm:hidden text-[11px] font-extrabold text-emerald-900">
+                            ⚡ {currentUser.notes_remaining}
+                        </span>
+                        <button
+                            onclick={handleLogout}
+                            title="Sign Out"
+                            class="w-6 h-6 rounded-full bg-emerald-200/80 hover:bg-rose-100 hover:text-rose-700 text-emerald-900 text-[10px] flex items-center justify-center font-bold transition"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                {:else}
+                    <button
+                        onclick={() => { authMode = 'login'; authError = ''; isAuthModalOpen = true; }}
+                        class="bg-emerald-800 hover:bg-emerald-900 text-white text-[11px] sm:text-xs font-extrabold px-3 py-1.5 rounded-xl shadow-2xs flex items-center gap-1.5 transition active:scale-95"
+                    >
+                        <span>🔑</span>
+                        <span>Sign In</span>
+                    </button>
+                {/if}
             </div>
         </div>
     </header>
@@ -357,6 +542,43 @@
                 <!-- Left Column: Form & Selectors (Full on mobile, 5 cols on tablet/desktop) -->
                 <div class="md:col-span-5 lg:col-span-5 space-y-4">
                     
+                    <!-- Quota Tracker / Guest Prompt Card -->
+                    {#if currentUser}
+                        <div class="bg-gradient-to-r from-emerald-900 to-teal-900 text-white rounded-2xl p-3.5 shadow-xs space-y-2">
+                            <div class="flex items-center justify-between text-xs">
+                                <span class="font-extrabold flex items-center gap-1.5">
+                                    <span>⚡</span> Weekly Quota ({currentUser.tier.toUpperCase()})
+                                </span>
+                                <span class="text-[11px] font-bold text-emerald-300">
+                                    {currentUser.notes_remaining} of {currentUser.quota_limit} notes left
+                                </span>
+                            </div>
+                            <div class="w-full bg-emerald-950/80 rounded-full h-2 overflow-hidden border border-emerald-700/50">
+                                <div
+                                    class="bg-emerald-400 h-full rounded-full transition-all duration-300"
+                                    style="width: {(currentUser.notes_remaining / currentUser.quota_limit) * 100}%"
+                                ></div>
+                            </div>
+                            <div class="flex items-center justify-between text-[10px] text-emerald-200/80">
+                                <span>{currentUser.notes_generated_this_week} used this week</span>
+                                <span>Resets every 7 days</span>
+                            </div>
+                        </div>
+                    {:else}
+                        <div class="bg-amber-50/90 border border-amber-200/90 rounded-2xl p-3 shadow-2xs flex items-center justify-between gap-2">
+                            <div class="text-xs">
+                                <span class="font-extrabold text-amber-950 block text-[11px]">Teacher Free Tier</span>
+                                <span class="text-[10px] text-amber-800">Sign in to sync notes & get 5 free weekly notes</span>
+                            </div>
+                            <button
+                                onclick={() => { authMode = 'register'; authError = ''; isAuthModalOpen = true; }}
+                                class="bg-amber-800 hover:bg-amber-900 text-white text-[10px] font-extrabold px-3 py-1.5 rounded-lg shadow-2xs shrink-0 transition"
+                            >
+                                Register Free
+                            </button>
+                        </div>
+                    {/if}
+
                     <!-- Curriculum Scheme Toggle (Pill Selector) -->
                     <div class="bg-slate-100 p-1.5 rounded-xl border border-slate-200 flex items-center gap-1">
                         <button
@@ -1095,6 +1317,155 @@
                         class="px-4 py-2 rounded-xl text-xs font-bold bg-emerald-800 hover:bg-emerald-900 text-white shadow-xs transition"
                     >
                         {isSavingNode ? 'Saving...' : 'Save Changes'}
+                    </button>
+                </div>
+            </div>
+        </div>
+    {/if}
+
+    <!-- ================= AUTH MODAL (SIGN IN / REGISTER) ================= -->
+    {#if isAuthModalOpen}
+        <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-2xs flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-5 sm:p-6 space-y-4 border border-slate-200 animate-in fade-in zoom-in-95 duration-150">
+                <div class="flex items-center justify-between border-b border-slate-100 pb-3">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xl bg-emerald-50 p-1.5 rounded-xl border border-emerald-100">📚</span>
+                        <div>
+                            <h3 class="font-extrabold text-slate-900 text-sm sm:text-base leading-tight">
+                                {authMode === 'login' ? 'Teacher Sign In' : 'Create Teacher Account'}
+                            </h3>
+                            <p class="text-[11px] text-slate-500">Access your cloud notes and weekly free quota</p>
+                        </div>
+                    </div>
+                    <button
+                        onclick={() => isAuthModalOpen = false}
+                        class="text-slate-400 hover:text-slate-700 font-bold text-lg px-2"
+                    >
+                        ✕
+                    </button>
+                </div>
+
+                <!-- Mode Switcher Tabs -->
+                <div class="bg-slate-100 p-1 rounded-xl flex items-center gap-1">
+                    <button
+                        type="button"
+                        class="flex-1 py-1.5 text-xs font-bold rounded-lg transition {authMode === 'login' ? 'bg-white text-emerald-950 shadow-xs' : 'text-slate-600 hover:text-slate-900'}"
+                        onclick={() => { authMode = 'login'; authError = ''; }}
+                    >
+                        Sign In
+                    </button>
+                    <button
+                        type="button"
+                        class="flex-1 py-1.5 text-xs font-bold rounded-lg transition {authMode === 'register' ? 'bg-white text-emerald-950 shadow-xs' : 'text-slate-600 hover:text-slate-900'}"
+                        onclick={() => { authMode = 'register'; authError = ''; }}
+                    >
+                        Create Free Account
+                    </button>
+                </div>
+
+                {#if authError}
+                    <div class="p-2.5 bg-rose-50 border border-rose-200 rounded-xl text-rose-800 text-xs font-semibold flex items-start gap-1.5">
+                        <span>⚠️</span>
+                        <span>{authError}</span>
+                    </div>
+                {/if}
+
+                <form onsubmit={(e) => { e.preventDefault(); submitAuth(); }} class="space-y-3">
+                    {#if authMode === 'register'}
+                        <div>
+                            <label for="auth-name-input" class="block text-xs font-bold text-slate-700 mb-1">Full Name</label>
+                            <input
+                                id="auth-name-input"
+                                type="text"
+                                bind:value={authName}
+                                placeholder="e.g., Mr. Okiki Jesute"
+                                class="w-full border border-slate-300 rounded-xl p-2.5 text-xs sm:text-sm font-semibold focus:border-emerald-600 focus:outline-none"
+                                required
+                            />
+                        </div>
+
+                        <div>
+                            <label for="auth-school-input" class="block text-xs font-bold text-slate-700 mb-1">School Name</label>
+                            <input
+                                id="auth-school-input"
+                                type="text"
+                                bind:value={authSchool}
+                                placeholder="e.g., St. Saviour's International College"
+                                class="w-full border border-slate-300 rounded-xl p-2.5 text-xs sm:text-sm font-semibold focus:border-emerald-600 focus:outline-none"
+                            />
+                        </div>
+                    {/if}
+
+                    <div>
+                        <label for="auth-email-input" class="block text-xs font-bold text-slate-700 mb-1">Email Address</label>
+                        <input
+                            id="auth-email-input"
+                            type="email"
+                            bind:value={authEmail}
+                            placeholder="teacher@school.ng"
+                            class="w-full border border-slate-300 rounded-xl p-2.5 text-xs sm:text-sm font-semibold focus:border-emerald-600 focus:outline-none"
+                            required
+                        />
+                    </div>
+
+                    <div>
+                        <label for="auth-password-input" class="block text-xs font-bold text-slate-700 mb-1">Password</label>
+                        <input
+                            id="auth-password-input"
+                            type="password"
+                            bind:value={authPassword}
+                            placeholder="••••••••"
+                            class="w-full border border-slate-300 rounded-xl p-2.5 text-xs sm:text-sm font-semibold focus:border-emerald-600 focus:outline-none"
+                            required
+                        />
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isSubmittingAuth}
+                        class="w-full py-3 px-4 rounded-xl text-xs sm:text-sm font-extrabold text-white transition flex items-center justify-center gap-2 shadow-md bg-emerald-800 hover:bg-emerald-900 active:scale-[0.99] disabled:bg-slate-400 mt-2"
+                    >
+                        {#if isSubmittingAuth}
+                            <span class="animate-spin text-sm">⏳</span>
+                            <span>Authenticating...</span>
+                        {:else}
+                            <span>{authMode === 'login' ? '🔑 Sign In to LessonFlows' : '🌟 Create Free Account (5 Notes/Week)'}</span>
+                        {/if}
+                    </button>
+                </form>
+            </div>
+        </div>
+    {/if}
+
+    <!-- ================= QUOTA EXCEEDED MODAL ================= -->
+    {#if isQuotaModalOpen}
+        <div class="fixed inset-0 z-50 bg-black/60 backdrop-blur-2xs flex items-center justify-center p-4">
+            <div class="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 text-center space-y-3.5 border border-slate-200 animate-in zoom-in-95 duration-150">
+                <span class="text-4xl block">⚡</span>
+                <h3 class="font-extrabold text-slate-900 text-base sm:text-lg">Weekly Free Quota Reached</h3>
+                <p class="text-xs sm:text-sm text-slate-600 leading-relaxed">
+                    You have generated all <strong>5 of your free lesson notes</strong> for this week! Your quota automatically resets every 7 days.
+                </p>
+
+                <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-950 font-medium space-y-1 text-left">
+                    <span class="font-extrabold block text-emerald-900">🌟 LessonFlows Premium Plan:</span>
+                    <p>• Unlimited note generation for all secondary classes (JSS 1–3).</p>
+                    <p>• Instant WhatsApp bot delivery for all 12 syllabus weeks.</p>
+                    <p>• Official custom crest stamping for inspection PDFs.</p>
+                </div>
+
+                <div class="flex items-center justify-center gap-2 pt-2">
+                    <button
+                        onclick={() => isQuotaModalOpen = false}
+                        class="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                    >
+                        Close
+                    </button>
+                    <button
+                        onclick={() => { alert('Premium onboarding is rolling out! Your early access has been prioritized.'); isQuotaModalOpen = false; }}
+                        class="px-4 py-2 rounded-xl text-xs font-extrabold bg-gradient-to-r from-emerald-800 to-teal-800 text-white shadow-xs hover:from-emerald-900"
+                    >
+                        Upgrade to Unlimited (₦1,500/mo)
                     </button>
                 </div>
             </div>
